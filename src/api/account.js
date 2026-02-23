@@ -12,11 +12,13 @@ import apiClient, { handleApiResponse } from './client.js';
  * 1. 自动关联到官方用户（official_user_001）
  * 2. 自动随机分配官方类型的工作流地址
  * 3. 默认设置为可出售状态（can_sell=true）
- * 4. 支持可选字段：session、session_expire_time、checkin_date、balance、used
+ * 4. 支持可选字段：session、session_expire_time、checkin_date、balance、used、platform_type、register_email_password
  * @param {Object} accountData - 账号数据
  * @param {string} accountData.username - 账号名称，根据account_type不同含义不同：0-AnyRouter账号名，1-LinuxDo账号名，2-GitHub账号名
  * @param {string} accountData.password - 账号密码，根据account_type不同含义不同：0-AnyRouter密码，1-LinuxDo密码，2-GitHub密码
  * @param {number} [accountData.account_type=0] - 账号类型（可选，默认0）：0-账号密码登录，1-LinuxDo登录，2-GitHub登录
+ * @param {string} [accountData.platform_type='anyrouter'] - 平台类型（可选，默认anyrouter）：anyrouter、agentrouter、coderouter
+ * @param {string} [accountData.register_email_password] - 注册邮箱密码（可选），格式为：邮箱-密码
  * @param {string} [accountData.session=''] - Session会话标识（可选，默认为空字符串）
  * @param {number} [accountData.session_expire_time=0] - Session过期时间戳（可选，默认为0）
  * @param {number} [accountData.checkin_date=0] - 签到时间戳（可选，默认为0）
@@ -29,6 +31,8 @@ export async function addOfficialAccount(accountData) {
 		username,
 		password,
 		account_type = 0,
+		platform_type = 'anyrouter',
+		register_email_password,
 		session = '',
 		session_expire_time = 0,
 		checkin_date = 0,
@@ -52,6 +56,14 @@ export async function addOfficialAccount(accountData) {
 		};
 	}
 
+	// 验证平台类型
+	if (!['anyrouter', 'agentrouter', 'coderouter'].includes(platform_type)) {
+		return {
+			success: false,
+			error: '平台类型必须为anyrouter、agentrouter或coderouter',
+		};
+	}
+
 	// 验证余额必须为非负数
 	if (typeof balance !== 'number' || balance < 0) {
 		return {
@@ -68,17 +80,26 @@ export async function addOfficialAccount(accountData) {
 		};
 	}
 
+	// 构建请求数据
+	const requestData = {
+		username,
+		password,
+		account_type,
+		platform_type,
+		session,
+		session_expire_time,
+		checkin_date,
+		balance,
+		used,
+	};
+
+	// 只有在提供了 register_email_password 时才添加到请求中
+	if (register_email_password) {
+		requestData.register_email_password = register_email_password;
+	}
+
 	return handleApiResponse(
-		apiClient.post('/lyanyrouter/addOfficialAccount', {
-			username,
-			password,
-			account_type,
-			session,
-			session_expire_time,
-			checkin_date,
-			balance,
-			used,
-		})
+		apiClient.post('/lyanyrouter/addOfficialAccount', requestData)
 	);
 }
 

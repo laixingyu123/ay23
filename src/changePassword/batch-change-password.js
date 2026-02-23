@@ -103,7 +103,7 @@ async function executeSingleChangePassword(passwordChangeData) {
 		} else {
 			console.log('\n[失败] 账密修改失败');
 			console.log(`[错误信息] ${changeResult.message}`);
-			console.log(`[调试] changeResult 对象:`, JSON.stringify(changeResult, null, 2));
+			console.log('[调试] changeResult 对象:', JSON.stringify(changeResult, null, 2));
 			console.log(`[调试] is_api_error 值: ${changeResult.is_api_error}`);
 
 			// 根据 is_api_error 标志判断是否为 API 错误
@@ -116,7 +116,7 @@ async function executeSingleChangePassword(passwordChangeData) {
 				error_reason: changeResult.message,
 				increment_error_count: isApiError,
 			};
-			console.log(`[调试] updatePasswordChange 参数:`, JSON.stringify(updateParams, null, 2));
+			console.log('[调试] updatePasswordChange 参数:', JSON.stringify(updateParams, null, 2));
 
 			await updatePasswordChange(updateParams);
 
@@ -183,7 +183,7 @@ async function executeBatchChangePassword(accountList) {
 	let successCount = 0;
 	let failedCount = 0;
 
-	console.log(`\n========== 批量改账密任务开始 ==========`);
+	console.log('\n========== 批量改账密任务开始 ==========');
 	console.log(`[总数] 共 ${accountList.length} 个账号待处理\n`);
 
 	for (let i = 0; i < accountList.length; i++) {
@@ -209,7 +209,7 @@ async function executeBatchChangePassword(accountList) {
 		}
 	}
 
-	console.log(`\n========== 批量改账密任务完成 ==========`);
+	console.log('\n========== 批量改账密任务完成 ==========');
 	console.log(`[统计] 总数: ${accountList.length}, 成功: ${successCount}, 失败: ${failedCount}`);
 
 	return {
@@ -235,7 +235,9 @@ if (isMainModule) {
 			if (!inputJson) {
 				console.error('[错误] 缺少参数');
 				console.error('用法: node batch-change-password.js \'[{"record_id":"xxx",...}]\'');
-				console.error('参数格式: JSON 数组，每个元素包含 record_id, old_username, old_password, new_username/new_password');
+				console.error(
+					'参数格式: JSON 数组，每个元素包含 record_id, old_username, old_password, new_username/new_password'
+				);
 				process.exit(1);
 			}
 

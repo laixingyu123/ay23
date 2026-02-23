@@ -11,8 +11,16 @@ import {
 	updateAccountInfo as updateAccountInfoAPI,
 	getLinuxDoAccountsWithSession,
 	getCheckinableAccounts,
+	getAccountList,
 } from '../api/index.js';
 import { fileURLToPath } from 'url';
+
+/** 平台配置映射表，key 对应 platform_type 字段值 */
+const PLATFORM_CONFIG = {
+	anyrouter: { url: 'https://anyrouter.top', name: 'AnyRouter' },
+	agentrouter: { url: 'https://agentrouter.org', name: 'AgentRouter' },
+	coderouter: { url: 'https://coderouter.top', name: 'CodeRouter' }, // TODO: 请确认 CodeRouter 的实际域名
+};
 
 class UnifiedAnyRouterChecker {
 	/**
@@ -162,10 +170,20 @@ class UnifiedAnyRouterChecker {
 	 */
 	async checkInWithLinuxDo(accountInfo) {
 		const accountName = accountInfo.username || accountInfo._id || '未知账号';
-		const checkinMode = accountInfo.checkin_mode || 3; // 默认值为3（两者都签到）
+		const platformType = accountInfo.platform_type || 'anyrouter';
 		const currentErrorCount = accountInfo.checkin_error_count || 0;
+		const platform = PLATFORM_CONFIG[platformType];
 
-		console.log(`[登录] ${accountName}: 使用 LinuxDo 第三方登录签到 (模式: ${checkinMode})`);
+		if (!platform) {
+			return {
+				success: false,
+				account: accountName,
+				error: `未知的平台类型: ${platformType}`,
+				method: 'linuxdo',
+			};
+		}
+
+		console.log(`[登录] ${accountName}: 使用 LinuxDo 第三方登录签到 (平台: ${platform.name})`);
 
 		// 如果错误次数 > 2，删除持久化缓存并重置错误次数
 		if (currentErrorCount > 2) {
@@ -189,122 +207,67 @@ class UnifiedAnyRouterChecker {
 			}
 		}
 
-		const results = [];
 		const updateData = {};
 
-		// 根据 checkin_mode 决定签到哪个平台
-		const platforms = [];
-		if (checkinMode === 1) {
-			platforms.push({ url: 'https://anyrouter.top', name: 'AnyRouter' });
-		} else if (checkinMode === 2) {
-			platforms.push({ url: 'https://agentrouter.org', name: 'AgentRouter' });
-		} else if (checkinMode === 3) {
-			platforms.push(
-				{ url: 'https://anyrouter.top', name: 'AnyRouter' },
-				{ url: 'https://agentrouter.org', name: 'AgentRouter' }
-			);
-		}
+		console.log(`[签到] ${accountName}: 开始签到 ${platform.name}...`);
 
-		// 依次签到各个平台
-		for (const platform of platforms) {
-			console.log(`[签到] ${accountName}: 开始签到 ${platform.name}...`);
+		// 为目标平台创建独立的 LinuxDo 签到实例
+		const linuxDoSignInModule = new AnyRouterLinuxDoSignIn(platform.url);
 
-			// 为每个平台创建独立的 LinuxDo 签到实例
-			const linuxDoSignInModule = new AnyRouterLinuxDoSignIn(platform.url);
+		// 调用 LinuxDo 登录模块
+		const loginResult = await linuxDoSignInModule.loginAndGetSession(
+			accountInfo.username,
+			accountInfo.password,
+			accountInfo.cache_key
+		);
 
-			// 调用 LinuxDo 登录模块
-			const loginResult = await linuxDoSignInModule.loginAndGetSession(
-				accountInfo.username,
-				accountInfo.password,
-				accountInfo.cache_key
-			);
-
-			if (loginResult && loginResult.userInfo) {
-				// 更新 session 和 account_id（仅在 AnyRouter 时更新）
-				if (platform.name === 'AnyRouter') {
-					if (loginResult.session) {
-						updateData.session = loginResult.session;
-						// session 有效期设置为 30 天
-						updateData.session_expire_time = Date.now() + 30 * 24 * 60 * 60 * 1000;
-					}
-					if (loginResult.apiUser) {
-						updateData.account_id = loginResult.apiUser;
-					}
-				}
-
-				// AnyRouter 的余额存储到 balance
-				if (platform.name === 'AnyRouter') {
-					updateData.balance = Math.round(loginResult.userInfo.quota / 500000);
-					updateData.used = Math.round((loginResult.userInfo.used_quota || 0) / 500000);
-					if (loginResult.userInfo.aff_code) {
-						updateData.aff_code = loginResult.userInfo.aff_code;
-					}
-				}
-				// AgentRouter 的余额存储到 agentrouter_balance
-				else if (platform.name === 'AgentRouter') {
-					updateData.agentrouter_balance = Math.round(loginResult.userInfo.quota / 500000);
-				}
-
-				const quota = (loginResult.userInfo.quota / 500000).toFixed(2);
-				const usedQuota = (loginResult.userInfo.used_quota || 0) / 500000;
-				const userInfoText = `💰 当前余额: $${quota}, 已使用: $${usedQuota.toFixed(2)}`;
-
-				results.push({
-					platform: platform.name,
-					success: true,
-					userInfo: userInfoText,
-				});
-
-				console.log(`[成功] ${accountName}: ${platform.name} 签到成功 - ${userInfoText}`);
-			} else {
-				results.push({
-					platform: platform.name,
-					success: false,
-					error: `${platform.name} 登录失败`,
-				});
-
-				console.error(`[失败] ${accountName}: ${platform.name} 签到失败`);
-
-				// 如果是两者都签到模式，且 AnyRouter 签到失败，则跳过后续平台签到
-				if (checkinMode === 3 && platform.name === 'AnyRouter') {
-					console.log(
-						`[跳过] ${accountName}: AnyRouter 签到失败，跳过 AgentRouter 签到，等待下次一起重试`
-					);
-					break;
-				}
+		if (loginResult && loginResult.userInfo) {
+			if (loginResult.session) {
+				updateData.session = loginResult.session;
+				// session 有效期设置为 30 天
+				updateData.session_expire_time = Date.now() + 30 * 24 * 60 * 60 * 1000;
 			}
-		}
+			if (loginResult.apiUser) {
+				updateData.account_id = loginResult.apiUser;
+			}
 
-		// 判断所有平台是否都签到成功
-		const allSuccess = results.every((r) => r.success);
+			// 账号与平台一一对应，统一使用 balance/used 字段
+			updateData.balance = Math.round(loginResult.userInfo.quota / 500000);
+			updateData.used = Math.round((loginResult.userInfo.used_quota || 0) / 500000);
+			if (loginResult.userInfo.aff_code) {
+				updateData.aff_code = loginResult.userInfo.aff_code;
+			}
 
-		// 只有至少有一个平台签到成功，才更新签到时间
-		if (results.some((r) => r.success)) {
 			updateData.checkin_date = Date.now();
-		}
+			updateData.checkin_error_count = 0;
 
-		// 更新签到错误次数
-		if (allSuccess) {
-			updateData.checkin_error_count = 0; // 签到成功，重置错误次数
+			await this.updateAccountInfo(accountInfo._id, updateData);
+
+			const quota = (loginResult.userInfo.quota / 500000).toFixed(2);
+			const usedQuota = (loginResult.userInfo.used_quota || 0) / 500000;
+			const userInfoText = `💰 当前余额: $${quota}, 已使用: $${usedQuota.toFixed(2)}`;
+
+			console.log(`[成功] ${accountName}: ${platform.name} 签到成功 - ${userInfoText}`);
+
+			return {
+				success: true,
+				account: accountName,
+				userInfo: userInfoText,
+				method: 'linuxdo',
+			};
 		} else {
-			updateData.checkin_error_count = currentErrorCount + 1; // 签到失败，增加错误次数
+			console.error(`[失败] ${accountName}: ${platform.name} 签到失败`);
+
+			updateData.checkin_error_count = currentErrorCount + 1;
+			await this.updateAccountInfo(accountInfo._id, updateData);
+
+			return {
+				success: false,
+				account: accountName,
+				error: `${platform.name} 登录失败`,
+				method: 'linuxdo',
+			};
 		}
-
-		// 更新账户信息到服务端
-		await this.updateAccountInfo(accountInfo._id, updateData);
-
-		// 构建返回结果
-		const userInfoTexts = results
-			.filter((r) => r.success)
-			.map((r) => `${r.platform}: ${r.userInfo}`);
-
-		return {
-			success: allSuccess,
-			account: accountName,
-			userInfo: userInfoTexts.length > 0 ? userInfoTexts.join('\n') : null,
-			method: 'linuxdo',
-			results, // 包含详细的签到结果
-		};
 	}
 
 	/**
@@ -312,10 +275,20 @@ class UnifiedAnyRouterChecker {
 	 */
 	async checkInWithGitHub(accountInfo) {
 		const accountName = accountInfo.username || accountInfo._id || '未知账号';
-		const checkinMode = accountInfo.checkin_mode || 3; // 默认值为3（两者都签到）
+		const platformType = accountInfo.platform_type || 'anyrouter';
 		const currentErrorCount = accountInfo.checkin_error_count || 0;
+		const platform = PLATFORM_CONFIG[platformType];
 
-		console.log(`[登录] ${accountName}: 使用 GitHub 第三方登录签到 (模式: ${checkinMode})`);
+		if (!platform) {
+			return {
+				success: false,
+				account: accountName,
+				error: `未知的平台类型: ${platformType}`,
+				method: 'github',
+			};
+		}
+
+		console.log(`[登录] ${accountName}: 使用 GitHub 第三方登录签到 (平台: ${platform.name})`);
 
 		// 如果错误次数 > 2，删除持久化缓存并重置错误次数
 		if (currentErrorCount > 2) {
@@ -346,123 +319,69 @@ class UnifiedAnyRouterChecker {
 			}
 		}
 
-		const results = [];
 		const updateData = {};
 
-		// 根据 checkin_mode 决定签到哪个平台
-		const platforms = [];
-		if (checkinMode === 1) {
-			platforms.push({ url: 'https://anyrouter.top', name: 'AnyRouter' });
-		} else if (checkinMode === 2) {
-			platforms.push({ url: 'https://agentrouter.org', name: 'AgentRouter' });
-		} else if (checkinMode === 3) {
-			platforms.push(
-				{ url: 'https://anyrouter.top', name: 'AnyRouter' },
-				{ url: 'https://agentrouter.org', name: 'AgentRouter' }
-			);
-		}
+		console.log(`[签到] ${accountName}: 开始签到 ${platform.name}...`);
 
-		// 依次签到各个平台
-		for (const platform of platforms) {
-			console.log(`[签到] ${accountName}: 开始签到 ${platform.name}...`);
+		// 为目标平台创建独立的 GitHub 签到实例
+		const githubSignInModule = new AnyRouterGitHubSignIn(platform.url);
 
-			// 为每个平台创建独立的 GitHub 签到实例
-			const githubSignInModule = new AnyRouterGitHubSignIn(platform.url);
+		// 调用 GitHub 登录模块，传递 TOTP 2FA 密钥
+		const loginResult = await githubSignInModule.loginAndGetSession(
+			accountInfo._id,
+			accountInfo.username,
+			accountInfo.password,
+			accountInfo.notice_email,
+			accountInfo.twofa_secret
+		);
 
-			// 调用 GitHub 登录模块
-			const loginResult = await githubSignInModule.loginAndGetSession(
-				accountInfo._id,
-				accountInfo.username,
-				accountInfo.password,
-				accountInfo.notice_email
-			);
-
-			if (loginResult && loginResult.userInfo) {
-				// 更新 session 和 account_id（仅在 AnyRouter 时更新）
-				if (platform.name === 'AnyRouter') {
-					if (loginResult.session) {
-						updateData.session = loginResult.session;
-						// session 有效期设置为 30 天
-						updateData.session_expire_time = Date.now() + 30 * 24 * 60 * 60 * 1000;
-					}
-					if (loginResult.apiUser) {
-						updateData.account_id = loginResult.apiUser;
-					}
-				}
-
-				// AnyRouter 的余额存储到 balance
-				if (platform.name === 'AnyRouter') {
-					updateData.balance = Math.round(loginResult.userInfo.quota / 500000);
-					updateData.used = Math.round((loginResult.userInfo.used_quota || 0) / 500000);
-					if (loginResult.userInfo.aff_code) {
-						updateData.aff_code = loginResult.userInfo.aff_code;
-					}
-				}
-				// AgentRouter 的余额存储到 agentrouter_balance
-				else if (platform.name === 'AgentRouter') {
-					updateData.agentrouter_balance = Math.round(loginResult.userInfo.quota / 500000);
-				}
-
-				const quota = (loginResult.userInfo.quota / 500000).toFixed(2);
-				const usedQuota = (loginResult.userInfo.used_quota || 0) / 500000;
-				const userInfoText = `💰 当前余额: $${quota}, 已使用: $${usedQuota.toFixed(2)}`;
-
-				results.push({
-					platform: platform.name,
-					success: true,
-					userInfo: userInfoText,
-				});
-
-				console.log(`[成功] ${accountName}: ${platform.name} 签到成功 - ${userInfoText}`);
-			} else {
-				results.push({
-					platform: platform.name,
-					success: false,
-					error: `${platform.name} 登录失败`,
-				});
-
-				console.error(`[失败] ${accountName}: ${platform.name} 签到失败`);
-
-				// 如果是两者都签到模式，且 AnyRouter 签到失败，则跳过后续平台签到
-				if (checkinMode === 3 && platform.name === 'AnyRouter') {
-					console.log(
-						`[跳过] ${accountName}: AnyRouter 签到失败，跳过 AgentRouter 签到，等待下次一起重试`
-					);
-					break;
-				}
+		if (loginResult && loginResult.userInfo) {
+			if (loginResult.session) {
+				updateData.session = loginResult.session;
+				// session 有效期设置为 30 天
+				updateData.session_expire_time = Date.now() + 30 * 24 * 60 * 60 * 1000;
 			}
-		}
+			if (loginResult.apiUser) {
+				updateData.account_id = loginResult.apiUser;
+			}
 
-		// 判断所有平台是否都签到成功
-		const allSuccess = results.every((r) => r.success);
+			// 账号与平台一一对应，统一使用 balance/used 字段
+			updateData.balance = Math.round(loginResult.userInfo.quota / 500000);
+			updateData.used = Math.round((loginResult.userInfo.used_quota || 0) / 500000);
+			if (loginResult.userInfo.aff_code) {
+				updateData.aff_code = loginResult.userInfo.aff_code;
+			}
 
-		// 只有至少有一个平台签到成功，才更新签到时间
-		if (results.some((r) => r.success)) {
 			updateData.checkin_date = Date.now();
-		}
+			updateData.checkin_error_count = 0;
 
-		// 更新签到错误次数
-		if (allSuccess) {
-			updateData.checkin_error_count = 0; // 签到成功，重置错误次数
+			await this.updateAccountInfo(accountInfo._id, updateData);
+
+			const quota = (loginResult.userInfo.quota / 500000).toFixed(2);
+			const usedQuota = (loginResult.userInfo.used_quota || 0) / 500000;
+			const userInfoText = `💰 当前余额: $${quota}, 已使用: $${usedQuota.toFixed(2)}`;
+
+			console.log(`[成功] ${accountName}: ${platform.name} 签到成功 - ${userInfoText}`);
+
+			return {
+				success: true,
+				account: accountName,
+				userInfo: userInfoText,
+				method: 'github',
+			};
 		} else {
-			updateData.checkin_error_count = currentErrorCount + 1; // 签到失败，增加错误次数
+			console.error(`[失败] ${accountName}: ${platform.name} 签到失败`);
+
+			updateData.checkin_error_count = currentErrorCount + 1;
+			await this.updateAccountInfo(accountInfo._id, updateData);
+
+			return {
+				success: false,
+				account: accountName,
+				error: `${platform.name} 登录失败`,
+				method: 'github',
+			};
 		}
-
-		// 更新账户信息到服务端
-		await this.updateAccountInfo(accountInfo._id, updateData);
-
-		// 构建返回结果
-		const userInfoTexts = results
-			.filter((r) => r.success)
-			.map((r) => `${r.platform}: ${r.userInfo}`);
-
-		return {
-			success: allSuccess,
-			account: accountName,
-			userInfo: userInfoTexts.length > 0 ? userInfoTexts.join('\n') : null,
-			method: 'github',
-			results, // 包含详细的签到结果
-		};
 	}
 
 	/**
@@ -648,11 +567,11 @@ class UnifiedAnyRouterChecker {
 		for (let i = 0; i < this.accounts.length; i++) {
 			try {
 				// 首个账号延迟处理
-				if (i === 0 && firstDelay) {
-					const delay = minDelay * 1000 + Math.random() * (maxDelay - minDelay) * 1000;
-					console.log(`[等待] 首个账号延迟 ${(delay / 1000).toFixed(1)} 秒后执行签到...`);
-					await new Promise((resolve) => setTimeout(resolve, delay));
-				}
+				// if (i === 0 && firstDelay) {
+				// 	const delay = minDelay * 1000 + Math.random() * (maxDelay - minDelay) * 1000;
+				// 	console.log(`[等待] 首个账号延迟 ${(delay / 1000).toFixed(1)} 秒后执行签到...`);
+				// 	await new Promise((resolve) => setTimeout(resolve, delay));
+				// }
 
 				const result = await this.checkInAccount(this.accounts[i], i);
 				results.push(result);
@@ -710,26 +629,38 @@ const isMainModule = fileURLToPath(import.meta.url) === process.argv[1];
 if (isMainModule) {
 	(async () => {
 		try {
-			console.log('[初始化] 从服务端获取可签到账号列表...');
+			console.log('[初始化] 从服务端获取账号列表...');
 
-			// 从服务端获取可签到账号列表
-			const apiResult = await getCheckinableAccounts();
+			// 固定用户 ID
+			// const userId = '69633ecb952272c52c5abb9a'; //mymy
+			const userId = '691812572d9d4df472aadeda'; //myde
+			// const userId = '68f98f2a2c5de7e57262ef43'; //Oliver
+			
+			// 使用 getAccountList 获取指定用户的账号列表
+			const apiResult = await getAccountList({ user_id: userId });
+
+			// 注释掉原有的 getCheckinableAccounts 方式
+			// const apiResult = await getCheckinableAccounts();
 
 			if (!apiResult.success) {
 				console.error(`[错误] 获取账号列表失败: ${apiResult.error}`);
 				process.exit(1);
 			}
 
-			const { data } = apiResult;
-			console.log(`[成功] 获取到 ${data.total} 个可签到账号 (查询日期: ${data.beijing_date})`);
+			const accounts = apiResult.data;
+			console.log(`[成功] 获取到 ${accounts.length} 个账号`);
 
-			if (data.total === 0) {
+			// accounts.forEach(item=>{
+			// 	item.session = ""
+			// })
+
+			if (accounts.length === 0) {
 				console.log('[完成] 没有需要签到的账号，程序退出');
 				process.exit(0);
 			}
 
 			// 执行签到
-			const checker = new UnifiedAnyRouterChecker(data.accounts);
+			const checker = new UnifiedAnyRouterChecker(accounts);
 			const checkResult = await checker.run();
 			console.log('\n[最终结果]', JSON.stringify(checkResult, null, 2));
 		} catch (error) {

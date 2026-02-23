@@ -11,6 +11,7 @@ import {
 } from '../utils/playwright-stealth.js';
 import { addAccountLoginInfo, getAccountLoginInfo } from '../api/index.js';
 import NotificationKit from '../utils/notify.js';
+import { generateTOTP } from '../utils/twofa.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -59,9 +60,10 @@ class AnyRouterGitHubSignIn {
 	 * @param {string} username - GitHub 用户名
 	 * @param {string} password - GitHub 密码
 	 * @param {string} noticeEmail - 通知邮箱 (可选，用于发送设备验证通知)
+	 * @param {string} twofaSecret - TOTP 两步验证密钥 Base32 编码 (可选，用于自动填写 2FA 验证码)
 	 * @returns {Object|null} - { session: string, apiUser: string, userInfo: object }
 	 */
-	async loginAndGetSession(accountId, username, password, noticeEmail = null) {
+	async loginAndGetSession(accountId, username, password, noticeEmail = null, twofaSecret = null) {
 		console.log(`[登录签到] 开始处理 GitHub 账号: ${username}`);
 		console.log(`[账号ID] AnyRouter 账号ID: ${accountId}`);
 
@@ -80,7 +82,7 @@ class AnyRouterGitHubSignIn {
 				ignoreHTTPSErrors: true,
 				viewport: { width: 1920, height: 1080 },
 				userAgent:
-					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
 				locale: 'zh-CN',
 				timezoneId: 'Asia/Shanghai',
 				deviceScaleFactor: 1,
@@ -315,7 +317,60 @@ class AnyRouterGitHubSignIn {
 					const afterLoginUrl = page.url();
 					console.log(`[页面] 登录后 URL: ${afterLoginUrl}`);
 
-					// 步骤5: 检查是否需要设备验证
+					// 步骤5a: 检查是否需要 TOTP 两步验证
+					if (afterLoginUrl.includes('/sessions/two-factor')) {
+						if (!twofaSecret) {
+							console.log('[2FA] 检测到两步验证页面，但未提供 twofa_secret，登录失败');
+							return null;
+						}
+
+						console.log('[2FA] 检测到 TOTP 两步验证页面，生成验证码...');
+						const totpCode = generateTOTP(twofaSecret);
+						console.log(`[2FA] 验证码已生成: ${totpCode}`);
+
+						await this.randomDelay(1000, 2000);
+
+						const otpInput = page.locator('#app_totp');
+						await otpInput.waitFor({ timeout: 10000 });
+						await otpInput.click();
+						await this.randomDelay(300, 600);
+
+						for (const char of totpCode) {
+							await page.keyboard.type(char);
+							await this.randomDelay(50, 100);
+						}
+
+						await this.randomDelay(2000, 3000);
+
+						// 如果验证码输入后页面未自动跳转，尝试点击提交按钮
+						if (page.url().includes('/sessions/two-factor')) {
+							const verifyButton = page.locator('button[type="submit"]:has-text("Verify")');
+							const isVerifyVisible = await verifyButton.isVisible().catch(() => false);
+							if (isVerifyVisible) {
+								await verifyButton.click();
+								await this.randomDelay(3000, 5000);
+							}
+						}
+
+						// 处理「信任此设备」页面
+						if (page.url().includes('/sessions/trusted-device')) {
+							console.log('[2FA] 检测到信任设备页面，点击跳过...');
+							const skipButton = page.locator('input.btn-link[type="submit"][value="Don\'t ask again for this browser"]');
+							await skipButton.waitFor({ timeout: 10000 });
+							await skipButton.click();
+							await this.randomDelay(3000, 5000);
+						}
+
+						const finalTotpUrl = page.url();
+						if (finalTotpUrl.includes('/sessions/two-factor') || finalTotpUrl.includes('/login')) {
+							console.log('[2FA] 两步验证失败，登录失败');
+							return null;
+						}
+
+						console.log('[2FA] 两步验证通过');
+					}
+
+					// 步骤5b: 检查是否需要设备验证
 					if (afterLoginUrl.includes('github.com/sessions/verified-device')) {
 						console.log('[设备验证] 检测到需要设备验证!');
 						console.log('[设备验证] 调用 addAccountLoginInfo 接口...');

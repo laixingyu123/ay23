@@ -240,7 +240,7 @@ class AnyRouterChangePassword {
 
 			const apiUser = loginResult.data.data?.id;
 			if (!apiUser) {
-				console.log(`[错误] 登录响应中未找到用户 ID`);
+				console.log('[错误] 登录响应中未找到用户 ID');
 				return {
 					success: false,
 					message: '登录响应中未找到用户 ID',
@@ -458,9 +458,9 @@ if (isMainModule) {
 				{
 					username: 'ziyou123653',
 					oldPassword: 'ziyou123653',
-					newUsername: "ziyou123654",
+					newUsername: 'ziyou123654',
 					newPassword: 'ziyou123654',
-				}
+				},
 			];
 
 			for (const account of accounts) {

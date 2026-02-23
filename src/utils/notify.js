@@ -47,7 +47,8 @@ class NotificationKit {
 			mailOptions.text = content;
 		}
 
-		await transporter.sendMail(mailOptions);
+		const result = await transporter.sendMail(mailOptions);
+		return result; // 返回发送结果，包含 messageId、accepted、rejected 等信息
 	}
 	/**
 	 * 推送消息到所有配置的通知渠道

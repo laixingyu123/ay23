@@ -149,7 +149,7 @@ class AnyRouterLinuxDoSignIn {
 			// 启动浏览器
 			browser = await chromium.launch(
 				PlaywrightAntiFingerprintPlugin.getLaunchOptions({
-					headless: false, // 非无头模式，需要用户手动过人机验证
+					headless: true, // 非无头模式，需要用户手动过人机验证
 				})
 			);
 
